@@ -1,0 +1,17 @@
+{
+  "name": "OSdeneme",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/rust:1": {}
+  },
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y nasm g++ make grub-pc-bin grub-common xorriso mtools qemu-system-x86 && rustup target add x86_64-unknown-none",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "ms-vscode.cpptools",
+        "13xforever.language-x86-64-assembly"
+      ]
+    }
+  }
+}

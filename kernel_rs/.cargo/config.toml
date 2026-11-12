@@ -1,0 +1,6 @@
+[build]
+target = "x86_64-unknown-none"
+
+[target.x86_64-unknown-none]
+# Cekirdegi 1MB'ta (dusuk adreste) calistirdigimiz icin "small" kod modeli
+rustflags = ["-C", "code-model=small", "-C", "relocation-model=static"]
