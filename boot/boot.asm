@@ -1,5 +1,7 @@
 ; OSdeneme - Assembly boot kodu (Multiboot2 + 32-bit -> 64-bit gecisi)
 global start
+global p4_table
+global p3_table
 extern kernel_main
 
 section .multiboot_header
@@ -9,6 +11,13 @@ header_start:
     dd 0                                            ; mimari: i386
     dd header_end - header_start
     dd 0x100000000 - (0xe85250d6 + 0 + (header_end - header_start))
+    dw 5                                            ; framebuffer istegi
+    dw 0
+    dd 20
+    dd 1024
+    dd 768
+    dd 32
+    dd 0                                            ; 8 bayta hizalama dolgusu
     dw 0                                            ; bitis etiketi
     dw 0
     dd 8

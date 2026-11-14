@@ -1,8 +1,9 @@
-//! OSdeneme v0.2 - Rust tarafi: seri port, PIC, PIT (zamanlayici), klavye tablosu.
+//! OSdeneme v0.4 - Rust tarafi: seri port, PIC, PIT (zamanlayici), klavye tablosu, PS/2 fare.
 #![no_std]
 
 use core::arch::asm;
 use core::panic::PanicInfo;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 const COM1: u16 = 0x3F8;
 const PIC1_CMD: u16 = 0x20;
@@ -79,7 +80,7 @@ pub extern "C" fn rust_serial_write_str(mut s: *const u8) {
 
 // ---------------- PIC (kesme denetleyicisi) ----------------
 
-/// IRQ'lari 32-47 vektorlerine tasir. Acik olanlar: IRQ0 (timer), IRQ1 (klavye), IRQ4 (COM1).
+/// IRQ'lari 32-47 vektorlerine tasir. Acik olanlar: IRQ0 (timer), IRQ1 (klavye), IRQ4 (COM1), IRQ12 (fare).
 #[no_mangle]
 pub extern "C" fn rust_pic_init() {
     unsafe {
@@ -92,7 +93,7 @@ pub extern "C" fn rust_pic_init() {
         outb(PIC1_DATA, 0x01);
         outb(PIC2_DATA, 0x01);
         outb(PIC1_DATA, 0xE8); // 1 = kapali; 0,1,2,4 acik
-        outb(PIC2_DATA, 0xFF);
+        outb(PIC2_DATA, 0xEF); // slave: yalnizca IRQ12 (fare) acik
     }
 }
 
@@ -133,6 +134,112 @@ pub extern "C" fn rust_scancode_to_ascii(sc: u8, shift: u8) -> u8 {
     } else {
         0
     }
+}
+
+// ---------------- PS/2 fare ----------------
+
+static MOUSE_IDX: AtomicU8 = AtomicU8::new(0);
+static MOUSE_B0: AtomicU8 = AtomicU8::new(0);
+static MOUSE_B1: AtomicU8 = AtomicU8::new(0);
+
+/// C++ tarafindaki MouseEvent ile ayni duzende.
+#[repr(C)]
+pub struct MouseEvent {
+    pub dx: i32,
+    pub dy: i32,
+    pub buttons: u8,
+}
+
+fn kbc_wait_write() {
+    for _ in 0..100_000 {
+        let s = unsafe { inb(0x64) };
+        if s & 2 == 0 {
+            return;
+        }
+    }
+}
+
+fn kbc_wait_read() {
+    for _ in 0..100_000 {
+        let s = unsafe { inb(0x64) };
+        if s & 1 != 0 {
+            return;
+        }
+    }
+}
+
+fn mouse_cmd(b: u8) {
+    kbc_wait_write();
+    unsafe { outb(0x64, 0xD4) }; // sonraki bayt fareye gitsin
+    kbc_wait_write();
+    unsafe { outb(0x60, b) };
+    kbc_wait_read();
+    let _ = unsafe { inb(0x60) }; // ACK (0xFA)
+}
+
+#[no_mangle]
+pub extern "C" fn rust_mouse_init() {
+    // Cikis tamponunda kalanlari at
+    for _ in 0..16 {
+        let s = unsafe { inb(0x64) };
+        if s & 1 != 0 {
+            let _ = unsafe { inb(0x60) };
+        }
+    }
+    kbc_wait_write();
+    unsafe { outb(0x64, 0xA8) }; // fare portunu ac
+    kbc_wait_write();
+    unsafe { outb(0x64, 0x20) }; // ayar baytini oku
+    kbc_wait_read();
+    let mut status = unsafe { inb(0x60) };
+    status |= 0x02; // IRQ12 ac
+    status &= !0x20; // fare saatini ac
+    kbc_wait_write();
+    unsafe { outb(0x64, 0x60) };
+    kbc_wait_write();
+    unsafe { outb(0x60, status) };
+    mouse_cmd(0xF6); // varsayilan ayarlar
+    mouse_cmd(0xF4); // veri gondermeye basla
+}
+
+/// IRQ12'de gelen her bayti verir. 3 baytlik paket tamamlaninca 1 doner ve `out`'u doldurur.
+#[no_mangle]
+pub extern "C" fn rust_mouse_feed(byte: u8, out: *mut MouseEvent) -> u8 {
+    let idx = MOUSE_IDX.load(Ordering::Relaxed);
+    if idx == 0 {
+        if byte & 0x08 == 0 {
+            return 0; // senkron kaybi: ilk bayt degil
+        }
+        MOUSE_B0.store(byte, Ordering::Relaxed);
+        MOUSE_IDX.store(1, Ordering::Relaxed);
+        return 0;
+    }
+    if idx == 1 {
+        MOUSE_B1.store(byte, Ordering::Relaxed);
+        MOUSE_IDX.store(2, Ordering::Relaxed);
+        return 0;
+    }
+    MOUSE_IDX.store(0, Ordering::Relaxed);
+    let flags = MOUSE_B0.load(Ordering::Relaxed);
+    if flags & 0xC0 != 0 {
+        return 0; // tasma
+    }
+    let mut dx = MOUSE_B1.load(Ordering::Relaxed) as i32;
+    let mut dy = byte as i32;
+    if flags & 0x10 != 0 {
+        dx -= 256;
+    }
+    if flags & 0x20 != 0 {
+        dy -= 256;
+    }
+    if !out.is_null() {
+        unsafe {
+            (*out).dx = dx;
+            (*out).dy = -dy; // ekranda y asagi dogru artar
+            (*out).buttons = flags & 0x07;
+        }
+    }
+    1
 }
 
 // ---------------- Hesaplama ----------------
